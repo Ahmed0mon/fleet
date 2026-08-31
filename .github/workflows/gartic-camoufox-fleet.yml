@@ -321,19 +321,41 @@ jobs:
       # signal at all — and the allow-list would correctly report `settled=0`
       # rather than a comforting fake number, which is right but useless. Fail in
       # 30 seconds instead.
-      - name: Gate — roomverify must work on the producer's own egress
+      - name: Self-check — roomverify on the producer's own egress (ADVISORY)
         shell: bash
+        continue-on-error: true
         run: |
-          set -euo pipefail
+          # DELIBERATELY NON-FATAL. This used to `set -e` and fail the job.
+          # 2026-08-31: gartic began 403/429-ing /req/list under load; every
+          # producer calls -list-rooms at startup, so a throttle made EVERY
+          # producer exit 1 within seconds. Each failure fired the supervisor's
+          # workflow_run refill, which dispatched another producer, which also
+          # failed -- a tight respawn loop that burned Actions minutes
+          # continuously, produced zero tokens, and is the most likely cause of
+          # two accounts being suspended.
+          #
+          # MINTING DOES NOT NEED THE ROOM LIST. Only self-verification does.
+          # A producer that cannot verify must still mint; it simply mints
+          # without acceptance feedback. Never let an optional instrument gate
+          # production again.
+          set -uo pipefail
           args=(); [ -n "${PROXY:-}" ] && args=(-proxy "$PROXY")
-          echo "--- roster (expect > 0 rooms) ---"
-          /tmp/roomverify "${args[@]}" -list-rooms 19,2,1,0,5 > /tmp/rooms.txt
-          echo "rooms=$(wc -l < /tmp/rooms.txt) via ${PROXY:-direct}"
-          test "$(wc -l < /tmp/rooms.txt)" -gt 0
-          echo "--- bogus token (expect bucket REFUSED_token) ---"
-          /tmp/roomverify "${args[@]}" -room "$(head -1 /tmp/rooms.txt)" \
-            '1.AAAAAAAAAAAA.BBBBBBBB' | tee /tmp/selftest.json
-          grep -q '"bucket":"REFUSED_token"' /tmp/selftest.json
+          echo "--- roster (advisory) ---"
+          if ! /tmp/roomverify "${args[@]}" -list-rooms 19,2,1,0,5 > /tmp/rooms.txt 2>&1; then
+            echo "::warning::roomverify could not list rooms - self-verification degraded. Producing anyway."
+            cat /tmp/rooms.txt || true
+            : > /tmp/rooms.txt
+          fi
+          n=$(wc -l < /tmp/rooms.txt 2>/dev/null || echo 0)
+          echo "rooms=$n via ${PROXY:-direct}"
+          if [ "$n" -gt 0 ]; then
+            echo "--- bogus token (expect bucket REFUSED_token) ---"
+            /tmp/roomverify "${args[@]}" -room "$(head -1 /tmp/rooms.txt)"               '1.AAAAAAAAAAAA.BBBBBBBB' | tee /tmp/selftest.json || true
+            grep -q '"bucket":"REFUSED_token"' /tmp/selftest.json               || echo "::warning::self-test did not return REFUSED_token - verification unreliable."
+          else
+            echo "::warning::no rooms available; skipping the bogus-token self-test."
+          fi
+          exit 0
 
       # ── CPU accounting. A GitHub public runner is 4 vCPU and the cost model is
       # ~6.7 %CPU per tok/min, so raising --lanes eventually stops buying rate.
