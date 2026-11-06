@@ -262,8 +262,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # 1.59.0, NOT 1.61.0. Since 2026-10-27 a WebSocket the driver never saw a
+          # request for trips assert(request2) in 1.61's FFPage._onWebSocketOpened,
+          # killing the Node driver; the producer then idles until its 1500 s stall
+          # timer (0.4 tok/min, was 25). 1.59.0 has no such handler and the VM lanes
+          # run it with 0 crashes.
           python -m pip install --disable-pip-version-check \
-            'camoufox[geoip]==0.4.11' 'playwright==1.61.0'
+            'camoufox[geoip]==0.4.11' 'playwright==1.59.0'
           python -c 'import camoufox, geoip2, playwright; print("imports=ok")'
           "$HOME/.cache/camoufox/camoufox-bin" --version
 
